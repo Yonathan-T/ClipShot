@@ -1,1 +1,37 @@
 secure.py
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+env/
+venv/
+ENV/
+.venv/
+
+# Environment variables (e.g., API keys)
+.env
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# VSCode or PyCharm settings
+.vscode/
+.idea/
+
+# Log files
+*.log
+
+# pytest cache
+.pytest_cache/
+
+# mypy and coverage reports
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# PEP 582; used by some tools like PDM
+__pypackages__/
