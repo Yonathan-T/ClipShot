@@ -10,6 +10,7 @@ import tempfile
 import uuid
 import subprocess
 import time
+import asyncio
 
 TOKEN = os.environ.get('TOKEN')
 BOT_USERNAME = os.environ.get('BOT_USERNAME')
@@ -242,5 +243,4 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL, handle_message))
     app.add_error_handler(error)
-    logger.info('Polling...')
-    app.run_polling(poll_interval=3)
+    asyncio.run(app.run_polling(poll_interval=3))
