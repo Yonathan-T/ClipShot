@@ -1,15 +1,7 @@
 import re
 import io
 import requests
-
-import sys
 import os
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from secure import TOKEN, BOT_USERNAME
-
-from secure import TOKEN, BOT_USERNAME
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from yt_dlp import YoutubeDL
@@ -19,6 +11,8 @@ import uuid
 import subprocess
 import time
 
+TOKEN = os.environ.get('TOKEN')
+BOT_USERNAME = os.environ.get('BOT_USERNAME')
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
