@@ -97,6 +97,7 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
         'outtmpl': tmp_basename,
         'quiet': True,
     }
+    downloaded_file = None
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -166,11 +167,12 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
             )
     finally:
         for f in [downloaded_file, compressed_filename]:
-            try:
-                if os.path.exists(f):
-                    os.remove(f)
-            except Exception as e:
-                logger.error(f"Failed to remove temp file {f}: {e}")
+            if f is not None:
+                try:
+                    if os.path.exists(f):
+                        os.remove(f)
+                except Exception as e:
+                    logger.error(f"Failed to remove temp file {f}: {e}")
 
 async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
     tmp_basename = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}")
