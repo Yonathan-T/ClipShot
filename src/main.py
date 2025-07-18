@@ -182,7 +182,7 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
     tmp_filename = tmp_basename + ".mp3"
     ydl_opts = {
         'format': 'bestaudio/best',
-        'ffmpeg_location': FFMPEG_PATH,
+         'ffmpeg_location': '/usr/bin',
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
