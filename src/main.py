@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 FFMPEG_PATH = r"C:\ProgramData\chocolatey\bin\ffmpeg.exe"
 
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|youtube\.com|youtu\.be)/.+(?:\?.+)?'
+    r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|youtube\.com|youtu\.be|tiktok\.com|vm\.tiktok\.com)/.+(?:\?.+)?'
 )
 
 CHOICES = {
