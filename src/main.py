@@ -11,13 +11,28 @@ import uuid
 import subprocess
 import time
 import asyncio
+import threading
+import http.server
+import socketserver
+try:
+    from secure import TOKEN, BOT_USERNAME
+except ImportError:
+    TOKEN = None
+    BOT_USERNAME = None
 
-TOKEN = os.environ.get('TOKEN')
-BOT_USERNAME = os.environ.get('BOT_USERNAME')
+TOKEN = os.environ.get('TOKEN', TOKEN)
+BOT_USERNAME = os.environ.get('BOT_USERNAME', BOT_USERNAME)
+
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-FFMPEG_PATH = r"C:\ProgramData\chocolatey\bin\ffmpeg.exe"
+# Dynamic FFmpeg path
+if os.name == 'nt':  # Windows
+    FFMPEG_PATH = r"C:\ProgramData\chocolatey\bin"
+    FFMPEG_BINARY = os.path.join(FFMPEG_PATH, 'ffmpeg.exe')
+else:  # Linux/Render
+    FFMPEG_PATH = '/usr/bin'
+    FFMPEG_BINARY = 'ffmpeg'
 
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|youtube\.com|youtu\.be)/.+(?:\?.+)?'
@@ -28,6 +43,14 @@ CHOICES = {
     'audio': 'Audio'
 }
 pending_choices = {}
+
+def run_health_check_server():
+    port = int(os.environ.get("PORT", "8080"))
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        logger.info(f"Health check server running on port {port}")
+        httpd.serve_forever()
+
 
 def expand_url(short_url):
     response = requests.head(short_url, allow_redirects=True)
@@ -93,8 +116,9 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
     compressed_filename = tmp_basename + "_compressed.mp4"
     ydl_opts = {
         'format': 'best',
-        'ffmpeg_location': FFMPEG_PATH,
+        'ffmpeg_location': FFMPEG_PATH if os.path.exists(FFMPEG_PATH) else None,
         'outtmpl': tmp_basename,
+
         'quiet': True,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -129,10 +153,9 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
         else:
             await update.effective_message.reply_text("Error: Downloaded video is empty or not found.")
             return
-        logger.info(f"Running ffmpeg: {FFMPEG_PATH} -i {downloaded_file} ...")
         try:
             ffmpeg_cmd = [
-                FFMPEG_PATH,
+                FFMPEG_BINARY,
                 '-i', downloaded_file,
                 '-c:v', 'libx264',
                 '-preset', 'slow',
@@ -145,6 +168,7 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
             ]
             logger.info(f"ffmpeg command: {' '.join(ffmpeg_cmd)}")
             subprocess.run(ffmpeg_cmd, check=True)
+
         except subprocess.CalledProcessError as e:
             logger.error(f"ffmpeg failed: {e}")
             await update.effective_message.reply_text("Error: ffmpeg failed to compress the video. Please try a different video or check ffmpeg permissions.")
@@ -168,6 +192,27 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
                 supports_streaming=True,
                 filename=f"{info.get('title', 'video')}.mp4"
             )
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"Error processing video: {error_message}")
+        if (
+            "login required" in error_message.lower()
+            or "private" in error_message.lower()
+            or "not available" in error_message.lower()
+            or "rate-limit" in error_message.lower()
+            or "requested content is not available" in error_message.lower()
+        ):
+            await update.effective_message.reply_text(
+                "❗ Sorry, I couldn't download this Instagram reel. "
+                "Please make sure the post is public and not from a private account. "
+                "If the problem persists, try again later or with a different link."
+            )
+        else:
+            await update.effective_message.reply_text(
+                f"An error occurred: {error_message}\n"
+                "If this keeps happening, please contact the bot owner."
+            )
+        return
     finally:
         for f in [downloaded_file, compressed_filename]:
             if f is not None:
@@ -182,7 +227,8 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
     tmp_filename = tmp_basename + ".mp3"
     ydl_opts = {
         'format': 'bestaudio/best',
-        'ffmpeg_location': FFMPEG_PATH,
+        'ffmpeg_location': FFMPEG_PATH if os.path.exists(FFMPEG_PATH) else None,
+
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -205,6 +251,26 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
                 caption="Here’s your audio!",
                 filename=f"{info.get('title', 'audio')}.mp3"
             )
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"Error processing audio: {error_message}")
+        if (
+            "login required" in error_message.lower()
+            or "private" in error_message.lower()
+            or "not available" in error_message.lower()
+            or "rate-limit" in error_message.lower()
+        ):
+            await update.effective_message.reply_text(
+                "❗ Sorry, I couldn't download this Instagram reel. "
+                "Please make sure the post is public and not from a private account. "
+                "If the problem persists, try again later or with a different link."
+            )
+        else:
+            await update.effective_message.reply_text(
+                f"An error occurred: {error_message}\n"
+                "If this keeps happening, please contact the bot owner."
+            )
+        return
     finally:
         if os.path.exists(tmp_filename):
             os.remove(tmp_filename)
@@ -242,6 +308,11 @@ async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == '__main__':
     logger.info('Starting bot...')
+
+    # Start health check server for Render
+    if os.environ.get('PORT'):
+        threading.Thread(target=run_health_check_server, daemon=True).start()
+
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler('start', start_command))
     app.add_handler(CommandHandler('help', help_command))
