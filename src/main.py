@@ -23,7 +23,22 @@ except ImportError:
 TOKEN = os.environ.get('TOKEN', TOKEN)
 BOT_USERNAME = os.environ.get('BOT_USERNAME', BOT_USERNAME)
 
+# Handle YouTube Cookies from Environment
+YT_COOKIES = os.environ.get('YT_COOKIES')
+COOKIES_FILE = None
+if YT_COOKIES:
+    try:
+        tmp_dir = tempfile.gettempdir()
+        COOKIES_FILE = os.path.join(tmp_dir, f"cookies_{uuid.uuid4()}.txt")
+        with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
+            f.write(YT_COOKIES)
+        logger.info(f"YouTube cookies loaded from environment into {COOKIES_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to load YT_COOKIES: {e}")
+        COOKIES_FILE = None
+
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 # Dynamic FFmpeg path
@@ -44,12 +59,23 @@ CHOICES = {
 }
 pending_choices = {}
 
+class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"<html><body><h1>ClipShot is running!</h1><p>Bot is active and polling for updates.</p></body></html>")
+    
+    def log_message(self, format, *args):
+        # Suppress logging for health checks to keep logs clean
+        return
+
 def run_health_check_server():
     port = int(os.environ.get("PORT", "8080"))
-    handler = http.server.SimpleHTTPRequestHandler
-    with socketserver.TCPServer(("", port), handler) as httpd:
+    with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
         logger.info(f"Health check server running on port {port}")
         httpd.serve_forever()
+
 
 
 def expand_url(short_url):
@@ -118,6 +144,8 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
         'format': 'best',
         'ffmpeg_location': FFMPEG_PATH if os.path.exists(FFMPEG_PATH) else None,
         'outtmpl': tmp_basename,
+        'cookiefile': COOKIES_FILE,
+
 
         'quiet': True,
         'http_headers': {
@@ -228,6 +256,8 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
     ydl_opts = {
         'format': 'bestaudio/best',
         'ffmpeg_location': FFMPEG_PATH if os.path.exists(FFMPEG_PATH) else None,
+        'cookiefile': COOKIES_FILE,
+
 
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
@@ -322,4 +352,14 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL, handle_message))
     app.add_error_handler(error)
-    asyncio.run(app.run_polling(poll_interval=3))
+    try:
+        asyncio.run(app.run_polling(poll_interval=3))
+    finally:
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+            try:
+                os.remove(COOKIES_FILE)
+                logger.info("Cleanup: Removed temporary cookies file")
+            except Exception as e:
+                logger.error(f"Failed to remove cookies file: {e}")
+
+
