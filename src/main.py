@@ -50,8 +50,9 @@ else:  # Linux/Render
     FFMPEG_BINARY = 'ffmpeg'
 
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|youtube\.com|youtu\.be)/.+(?:\?.+)?'
+    r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|youtube\.com|youtu\.be|tiktok\.com|vm\.tiktok\.com)/.+(?:\?.+)?'
 )
+
 
 CHOICES = {
     'video': 'Video',
@@ -78,9 +79,17 @@ def run_health_check_server():
 
 
 
-def expand_url(short_url):
-    response = requests.head(short_url, allow_redirects=True)
-    return response.url
+async def expand_url(short_url):
+    try:
+        # Use an async call to avoid blocking the event loop
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.head(short_url, follow_redirects=True)
+            return str(response.url)
+    except Exception as e:
+        logger.error(f"Error expanding URL: {e}")
+        return short_url
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hey there! 🎥🔊 Welcome to ClipShot, your go-to genie for snatching videos and jamming to audio from Twitter and Instagram! Ready to dive into the media madness? Send me a URL, and let's get this party started!")
@@ -92,15 +101,17 @@ async def custom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Feeling fancy? 🕺 `/custom` is your backstage pass to special requests. Currently, it’s chilling, but stay tuned for more tricks up ClipShot’s sleeve! (This was a test command sorry 😁)")
 
 async def introduction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Greetings, 🌟 I’m ClipShot, your trusty sidekick for capturing videos and audio from Twitter and Instagram. Think of me as your personal DJ and filmmaker rolled into one! 🎶🎥\nWant to see the magic behind the curtain? Check out my repo and give it a star if you dig it! ⭐\nRepo Link: [github.com/Yonathan-T/ClipShot](https://github.com/Yonathan-T/ClipShot)\nNow, let’s get clipping and shooting!")
+    await update.message.reply_text("Greetings, 🌟 I’m ClipShot, your trusty sidekick for capturing videos and audio from Twitter, Tiktok and Instagram. Think of me as your personal DJ and filmmaker rolled into one! 🎶🎥\nWant to see the magic behind the curtain? Check out my repo and give it a star if you dig it! ⭐\nRepo Link: [github.com/Yonathan-T/ClipShot](https://github.com/Yonathan-T/ClipShot)\nNow, let’s get clipping and shooting!")
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     logger.info(f"Received message text: {message_text}")
     if message_text.startswith("https://x.com/i/status/"):
-        message_text = expand_url(message_text)
+        message_text = await expand_url(message_text)
         logger.info(f"Expanded URL: {message_text}")
+    
     if URL_PATTERN.match(message_text):
+
         logger.info(f"URL pattern matched: {message_text}")
         user_id = update.message.from_user.id
         pending_choices[user_id] = message_text
@@ -111,8 +122,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Choose an option:", reply_markup=reply_markup)
     else:
-        logger.info(f"URL pattern did not match: {message_text}")
-        await update.message.reply_text("Please send a valid Twitter , Youtube or Instagram video/reel URL or use a command.")
+        logger.info(f"URL pattern did not match in handle_url: {message_text}")
+        # This shouldn't happen much with the new specific filters, but just in case:
+        await update.message.reply_text("Please send a valid Twitter, Youtube, TikTok or Instagram URL.")
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -322,12 +335,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_type = update.message.chat.type
     text = update.message.text
     logger.info(f'User ({update.message.chat.id}) in {message_type}: "{text}"')
-    if message_type == 'group':
-        if BOT_USERNAME in text:
+    if message_type in ['group', 'supergroup']:
+        if BOT_USERNAME and BOT_USERNAME in text:
             new_text = text.replace(BOT_USERNAME, '').strip()
             response = handle_response(update, new_text)
         else:
             return
+
     else:
         response = handle_response(update, text)
     logger.info(f"Bot: {response}")
@@ -348,9 +362,14 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('help', help_command))
     app.add_handler(CommandHandler('custom', custom_command))
     app.add_handler(CommandHandler('introduction', introduction_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+    # Handler for URLs
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(URL_PATTERN), handle_url))
+    
+    # Handler for general conversation (only if it doesn't match a URL)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(URL_PATTERN) & ~filters.StatusUpdate.ALL, handle_message))
+    
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL, handle_message))
+
     app.add_error_handler(error)
     try:
         asyncio.run(app.run_polling(poll_interval=3))
