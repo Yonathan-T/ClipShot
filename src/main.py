@@ -50,7 +50,7 @@ else:  # Linux/Render
     FFMPEG_BINARY = 'ffmpeg'
 
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|youtube\.com|youtu\.be|tiktok\.com|vm\.tiktok\.com)/.+(?:\?.+)?'
+    r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|youtube\.com|youtu\.be|tiktok\.com|vt\.tiktok\.com|vm\.tiktok\.com|facebook\.com|fb\.watch)/.+(?:\?.+)?'
 )
 
 
@@ -139,18 +139,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if choice not in CHOICES:
         await query.edit_message_text("Invalid choice.")
         return
-    await query.edit_message_text(f"Processing {CHOICES[choice]} from {url}... Please wait.")
+    
+    processing_text = f"Processing {choice}..."
+    await query.edit_message_text(processing_text)
+    
     try:
         if choice == 'video':
-            await process_video(update, context, url)
+            await process_video(update, context, url, query)
         else: 
-            await process_audio(update, context, url)
+            await process_audio(update, context, url, query)
         del pending_choices[user_id]
     except Exception as e:
         logger.error(f"Error processing {choice}: {e}")
         await query.edit_message_text(f"Error processing {choice}: {str(e)}. Please try again.")
 
-async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
+async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, query):
     tmp_basename = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}")
     compressed_filename = tmp_basename + "_compressed.mp4"
     ydl_opts = {
@@ -180,11 +183,15 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
             with open(downloaded_file, 'rb') as f:
                 buffer = io.BytesIO(f.read())
                 buffer.seek(0)
+                await query.delete_message()
                 await update.effective_message.reply_video(
                     video=buffer,
-                    caption="Here’s your video!",
+                    caption="Here's your video!",
                     supports_streaming=True,
-                    filename=f"{info.get('title', 'video')}.mp4"
+                    filename=f"{info.get('title', 'video')}.mp4",
+                    read_timeout=60,
+                    write_timeout=60,
+                    connect_timeout=60
                 )
             return
         for _ in range(10):
@@ -227,12 +234,16 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
         with open(compressed_filename, 'rb') as f:
             buffer = io.BytesIO(f.read())
             buffer.seek(0)
-            await update.effective_message.reply_video(
-                video=buffer,
-                caption="Here’s your video!",
-                supports_streaming=True,
-                filename=f"{info.get('title', 'video')}.mp4"
-            )
+        await query.delete_message()
+        await update.effective_message.reply_video(
+            video=buffer,
+            caption="Here's your video!",
+            supports_streaming=True,
+            filename=f"{info.get('title', 'video')}.mp4",
+            read_timeout=60,
+            write_timeout=60,
+            connect_timeout=60
+        )
     except Exception as e:
         error_message = str(e)
         logger.error(f"Error processing video: {error_message}")
@@ -242,12 +253,19 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
             or "not available" in error_message.lower()
             or "rate-limit" in error_message.lower()
             or "requested content is not available" in error_message.lower()
+            or "unsupported url" in error_message.lower()
         ):
-            await update.effective_message.reply_text(
-                "❗ Sorry, I couldn't download this Instagram reel. "
-                "Please make sure the post is public and not from a private account. "
-                "If the problem persists, try again later or with a different link."
-            )
+            if "tiktok" in url.lower() and "photo" in url.lower():
+                await update.effective_message.reply_text(
+                    "❗ Sorry, I can't download TikTok photos. "
+                    "Please send a TikTok video URL instead."
+                )
+            else:
+                await update.effective_message.reply_text(
+                    "❗ Sorry, I couldn't download this content. "
+                    "Please make sure the post is public and not from a private account. "
+                    "If the problem persists, try again later or with a different link."
+                )
         else:
             await update.effective_message.reply_text(
                 f"An error occurred: {error_message}\n"
@@ -263,7 +281,7 @@ async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
                 except Exception as e:
                     logger.error(f"Failed to remove temp file {f}: {e}")
 
-async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
+async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, query):
     tmp_basename = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}")
     tmp_filename = tmp_basename + ".mp3"
     ydl_opts = {
@@ -289,9 +307,10 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
         with open(tmp_filename, 'rb') as f:
             buffer = io.BytesIO(f.read())
             buffer.seek(0)
+            await query.delete_message()
             await update.effective_message.reply_audio(
                 audio=buffer,
-                caption="Here’s your audio!",
+                caption="Here's your audio!",
                 filename=f"{info.get('title', 'audio')}.mp3"
             )
     except Exception as e:
@@ -302,12 +321,19 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url:
             or "private" in error_message.lower()
             or "not available" in error_message.lower()
             or "rate-limit" in error_message.lower()
+            or "unsupported url" in error_message.lower()
         ):
-            await update.effective_message.reply_text(
-                "❗ Sorry, I couldn't download this Instagram reel. "
-                "Please make sure the post is public and not from a private account. "
-                "If the problem persists, try again later or with a different link."
-            )
+            if "tiktok" in url.lower() and "photo" in url.lower():
+                await update.effective_message.reply_text(
+                    "❗ Sorry, I can't extract audio from TikTok photos. "
+                    "Please send a TikTok video URL instead."
+                )
+            else:
+                await update.effective_message.reply_text(
+                    "❗ Sorry, I couldn't extract audio from this content. "
+                    "Please make sure the post is public and not from a private account. "
+                    "If the problem persists, try again later or with a different link."
+                )
         else:
             await update.effective_message.reply_text(
                 f"An error occurred: {error_message}\n"
