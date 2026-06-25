@@ -1,0 +1,14 @@
+name: Supabase Keep-Alive
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Keep-Alive Ping
+        run: |
+          curl -s -X GET "https://clipshot.onrender.com/" | grep -q "running" && echo "✅ App is awake" || echo "❌ Health check failed"
