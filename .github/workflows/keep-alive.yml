@@ -1,8 +1,8 @@
-name: Supabase Keep-Alive
+name: Render Keep-Alive
 
 on:
   schedule:
-    - cron: '0 */12 * * *'
+    - cron: "*/12 * * * *"
   workflow_dispatch:
 
 jobs:
