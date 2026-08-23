@@ -73,6 +73,7 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
 
 def run_health_check_server():
     port = int(os.environ.get("PORT", "8080"))
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
         logger.info(f"Health check server running on port {port}")
         httpd.serve_forever()
@@ -398,7 +399,7 @@ if __name__ == '__main__':
 
     app.add_error_handler(error)
     try:
-        asyncio.run(app.run_polling(poll_interval=3))
+        app.run_polling(poll_interval=3)
     finally:
         if COOKIES_FILE and os.path.exists(COOKIES_FILE):
             try:
