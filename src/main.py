@@ -1,31 +1,23 @@
-import asyncio
-import logging
-import os
-import re
-import shutil
-import subprocess
-import tempfile
-import uuid
-import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
-    ContextTypes,
     MessageHandler,
     filters,
 )
-from yt_dlp import YoutubeDL
-
-# Configure logging first so it is available everywhere
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+from config import PORT, TOKEN, URL_PATTERN, WEBHOOK_URL, cleanup_cookies, logger
+from handlers import (
+    button_handler,
+    custom_command,
+    error_handler,
+    handle_message,
+    handle_url,
+    help_command,
+    introduction_command,
+    start_command,
 )
-logger = logging.getLogger(__name__)
 
-# Monkeypatch PTB's Webhook TelegramHandler so GET / responds to Render's health checks
 try:
     from telegram.ext._utils.webhookhandler import TelegramHandler
 
@@ -40,438 +32,42 @@ try:
 except Exception as e:
     logger.warning(f"Could not monkeypatch TelegramHandler for health checks: {e}")
 
-try:
-    from secure import BOT_USERNAME, TOKEN
-except ImportError:
-    TOKEN = None
-    BOT_USERNAME = None
 
-TOKEN = os.environ.get("TOKEN", TOKEN)
-BOT_USERNAME = os.environ.get("BOT_USERNAME", BOT_USERNAME)
-
-# Handle YouTube Cookies from Environment
-YT_COOKIES = os.environ.get("YT_COOKIES")
-COOKIES_FILE = None
-if YT_COOKIES:
-    try:
-        tmp_dir = tempfile.gettempdir()
-        COOKIES_FILE = os.path.join(tmp_dir, f"cookies_{uuid.uuid4()}.txt")
-        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
-            f.write(YT_COOKIES)
-        logger.info(f"YouTube cookies loaded from environment into {COOKIES_FILE}")
-    except Exception as e:
-        logger.error(f"Failed to load YT_COOKIES: {e}")
-        COOKIES_FILE = None
-
-# Dynamic FFmpeg binary resolution
-FFMPEG_BINARY = shutil.which("ffmpeg") or ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
-FFMPEG_PATH = os.path.dirname(FFMPEG_BINARY) if os.path.isabs(FFMPEG_BINARY) else None
-
-URL_PATTERN = re.compile(
-    r"https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|youtube\.com|youtu\.be|tiktok\.com|vt\.tiktok\.com|vm\.tiktok\.com|facebook\.com|fb\.watch)/.+(?:\?.+)?"
-)
-
-CHOICES = {
-    "video": "Video",
-    "audio": "Audio",
-}
-pending_choices = {}
-
-
-async def expand_url(short_url: str) -> str:
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.head(short_url)
-            return str(response.url)
-    except Exception as e:
-        logger.error(f"Error expanding URL: {e}")
-        return short_url
-
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hey there! 🎥🔊 Welcome to ClipShot, your go-to genie for snatching videos and jamming to audio from Twitter, TikTok, and Instagram! Send me a URL, and let's get started!"
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Need a hand? 🛠️ Here’s the scoop on ClipShot commands:\n"
-        "- `/start` - Kick off the fun!\n"
-        "- `/help` - You’re here, genius!\n"
-        "- `/custom` - For special requests.\n"
-        "- `/introduction` - Meet the star of the show!\n\n"
-        "Just drop a Twitter, YouTube, TikTok, or Instagram video/reel URL, and choose Video or Audio."
-    )
-
-
-async def custom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Feeling fancy? 🕺 `/custom` is your backstage pass to special requests. Currently chilling, but stay tuned for more tricks up ClipShot’s sleeve!"
-    )
-
-
-async def introduction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Greetings, 🌟 I’m ClipShot, your trusty sidekick for capturing videos and audio from Twitter, TikTok, YouTube, and Instagram. Think of me as your personal DJ and filmmaker rolled into one! 🎶🎥\n\n"
-        "Want to see the magic behind the curtain? Check out my repo and give it a star if you dig it! ⭐\n"
-        "Repo: [github.com/Yonathan-T/ClipShot](https://github.com/Yonathan-T/ClipShot)"
-    )
-
-
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message_text = update.message.text.strip()
-    logger.info(f"Received message text: {message_text}")
-
-    # Expand shortened URLs for TikTok, X/Twitter status, fb.watch, etc.
-    if any(short in message_text for short in ["x.com/i/status/", "vt.tiktok.com", "vm.tiktok.com", "fb.watch"]):
-        message_text = await expand_url(message_text)
-        logger.info(f"Expanded URL: {message_text}")
-
-    if URL_PATTERN.match(message_text):
-        logger.info(f"URL pattern matched: {message_text}")
-        user_id = update.message.from_user.id
-        pending_choices[user_id] = message_text
-        context.user_data["pending_url"] = message_text
-
-        keyboard = [
-            [InlineKeyboardButton(CHOICES["video"], callback_data="video")],
-            [InlineKeyboardButton(CHOICES["audio"], callback_data="audio")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Choose an option:", reply_markup=reply_markup)
-    else:
-        logger.info(f"URL pattern did not match in handle_url: {message_text}")
-        await update.message.reply_text("Please send a valid Twitter, YouTube, TikTok, Facebook, or Instagram URL.")
-
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    choice = query.data
-    logger.info(f"Button callback received: choice='{choice}', user_id={user_id}")
-
-    url = pending_choices.pop(user_id, None) or context.user_data.get("pending_url")
-    if not url:
-        logger.warning(f"No pending URL found for user {user_id}")
-        await query.edit_message_text("No pending URL found. Please send a URL first.")
-        return
-
-    if choice not in CHOICES:
-        await query.edit_message_text("Invalid choice.")
-        return
-
-    await query.edit_message_text(f"⏳ Processing {choice}... Please wait.")
-
-    try:
-        if choice == "video":
-            await process_video(update, context, url, query)
-        else:
-            await process_audio(update, context, url, query)
-    except Exception as e:
-        logger.error(f"Error processing {choice}: {e}")
-        try:
-            await query.edit_message_text(f"❌ Error processing {choice}: {str(e)}. Please try again.")
-        except Exception:
-            pass
-
-
-async def process_video(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, query):
-    tmp_basename = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}")
-    compressed_filename = tmp_basename + "_compressed.mp4"
-    ydl_opts = {
-        "format": "best",
-        "ffmpeg_location": FFMPEG_PATH if (FFMPEG_PATH and os.path.exists(FFMPEG_PATH)) else None,
-        "outtmpl": tmp_basename,
-        "cookiefile": COOKIES_FILE,
-        "quiet": True,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        },
-    }
-    downloaded_file = None
-    try:
-        def _download():
-            with YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(url, download=True)
-
-        info = await asyncio.to_thread(_download)
-
-        if "requested_downloads" in info and info["requested_downloads"]:
-            downloaded_file = info["requested_downloads"][0]["filepath"]
-        elif "_filename" in info:
-            downloaded_file = info["_filename"]
-        else:
-            downloaded_file = tmp_basename
-
-        logger.info(f"Downloaded file size: {os.path.getsize(downloaded_file)} bytes")
-
-        # Stream directly from disk rather than reading into RAM buffer (prevents OOM)
-        if os.path.getsize(downloaded_file) <= 50 * 1024 * 1024:
-            with open(downloaded_file, "rb") as video_file:
-                try:
-                    await query.delete_message()
-                except Exception:
-                    pass
-                await update.effective_message.reply_video(
-                    video=video_file,
-                    caption="Here's your video! 🎥",
-                    supports_streaming=True,
-                    filename=f"{info.get('title', 'video')}.mp4",
-                    read_timeout=120,
-                    write_timeout=120,
-                    connect_timeout=60,
-                )
-            return
-
-        for _ in range(10):
-            if os.path.exists(downloaded_file) and os.path.getsize(downloaded_file) > 0:
-                break
-            await asyncio.sleep(0.2)
-        else:
-            await update.effective_message.reply_text("Error: Downloaded video is empty or not found.")
-            return
-
-        try:
-            ffmpeg_cmd = [
-                FFMPEG_BINARY,
-                "-i", downloaded_file,
-                "-c:v", "libx264",
-                "-preset", "slow",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", "192k",
-                "-ac", "2",
-                "-y",
-                compressed_filename,
-            ]
-            logger.info(f"ffmpeg command: {' '.join(ffmpeg_cmd)}")
-            await asyncio.to_thread(subprocess.run, ffmpeg_cmd, check=True)
-
-        except subprocess.CalledProcessError as e:
-            logger.error(f"ffmpeg failed: {e}")
-            await update.effective_message.reply_text(
-                "Error: ffmpeg failed to compress the video. Please try a different video or check ffmpeg permissions."
-            )
-            return
-        except PermissionError as e:
-            logger.error(f"Permission error: {e}")
-            await update.effective_message.reply_text(
-                "Permission error: ffmpeg could not access the file. Check permissions or antivirus settings."
-            )
-            return
-
-        if not os.path.exists(compressed_filename) or os.path.getsize(compressed_filename) == 0:
-            await update.effective_message.reply_text("Error: Compressed video is empty or not found.")
-            return
-
-        if os.path.getsize(compressed_filename) > 50 * 1024 * 1024:
-            await update.effective_message.reply_text(
-                "Sorry, the video is too large to send via Telegram (limit is 50 MB). Try a shorter video."
-            )
-            return
-
-        with open(compressed_filename, "rb") as video_file:
-            try:
-                await query.delete_message()
-            except Exception:
-                pass
-            await update.effective_message.reply_video(
-                video=video_file,
-                caption="Here's your video! 🎥",
-                supports_streaming=True,
-                filename=f"{info.get('title', 'video')}.mp4",
-                read_timeout=120,
-                write_timeout=120,
-                connect_timeout=60,
-            )
-    except Exception as e:
-        error_message = str(e)
-        logger.error(f"Error processing video: {error_message}")
-        try:
-            await query.delete_message()
-        except Exception:
-            pass
-
-        if (
-            "login required" in error_message.lower()
-            or "private" in error_message.lower()
-            or "not available" in error_message.lower()
-            or "rate-limit" in error_message.lower()
-            or "requested content is not available" in error_message.lower()
-            or "unsupported url" in error_message.lower()
-        ):
-            if "tiktok" in url.lower() and "photo" in url.lower():
-                await update.effective_message.reply_text(
-                    "❗ Sorry, I can't download TikTok photos. Please send a TikTok video URL instead."
-                )
-            else:
-                await update.effective_message.reply_text(
-                    "❗ Sorry, I couldn't download this content. "
-                    "Please make sure the post is public and not from a private account. "
-                    "If the problem persists, try again later or with a different link."
-                )
-        else:
-            await update.effective_message.reply_text(
-                f"An error occurred: {error_message}\nIf this keeps happening, please contact the bot owner."
-            )
-        return
-    finally:
-        for f in [downloaded_file, compressed_filename]:
-            if f is not None:
-                try:
-                    if os.path.exists(f):
-                        os.remove(f)
-                except Exception as e:
-                    logger.error(f"Failed to remove temp file {f}: {e}")
-
-
-async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, query):
-    tmp_basename = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}")
-    tmp_filename = tmp_basename + ".mp3"
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "ffmpeg_location": FFMPEG_PATH if (FFMPEG_PATH and os.path.exists(FFMPEG_PATH)) else None,
-        "cookiefile": COOKIES_FILE,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
-        "outtmpl": tmp_basename,
-        "quiet": True,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        },
-    }
-    try:
-        def _download_audio():
-            with YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(url, download=True)
-
-        info = await asyncio.to_thread(_download_audio)
-
-        with open(tmp_filename, "rb") as audio_file:
-            try:
-                await query.delete_message()
-            except Exception:
-                pass
-            await update.effective_message.reply_audio(
-                audio=audio_file,
-                caption="Here's your audio! 🎶",
-                filename=f"{info.get('title', 'audio')}.mp3",
-                read_timeout=120,
-                write_timeout=120,
-                connect_timeout=60,
-            )
-    except Exception as e:
-        error_message = str(e)
-        logger.error(f"Error processing audio: {error_message}")
-        try:
-            await query.delete_message()
-        except Exception:
-            pass
-
-        if (
-            "login required" in error_message.lower()
-            or "private" in error_message.lower()
-            or "not available" in error_message.lower()
-            or "rate-limit" in error_message.lower()
-            or "unsupported url" in error_message.lower()
-        ):
-            if "tiktok" in url.lower() and "photo" in url.lower():
-                await update.effective_message.reply_text(
-                    "❗ Sorry, I can't extract audio from TikTok photos. Please send a TikTok video URL instead."
-                )
-            else:
-                await update.effective_message.reply_text(
-                    "❗ Sorry, I couldn't extract audio from this content. "
-                    "Please make sure the post is public and not from a private account. "
-                    "If the problem persists, try again later or with a different link."
-                )
-        else:
-            await update.effective_message.reply_text(
-                f"An error occurred: {error_message}\nIf this keeps happening, please contact the bot owner."
-            )
-        return
-    finally:
-        if os.path.exists(tmp_filename):
-            try:
-                os.remove(tmp_filename)
-            except Exception as e:
-                logger.error(f"Failed to remove audio temp file: {e}")
-
-
-def handle_response(update: Update, text: str) -> str:
-    processed = text.lower()
-    user_name = update.message.chat.first_name
-    if "hello" in processed:
-        return f"Hey there {user_name} 👋"
-    if "how are you" in processed:
-        return "I am good!"
-    if "who created you" in processed or "who made you" in processed:
-        return "My developer is Yonathan"
-    return "Sorry, I can’t understand what you wrote (Still in development 🛠️)"
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message_type = update.message.chat.type
-    text = update.message.text
-    logger.info(f'User ({update.message.chat.id}) in {message_type}: "{text}"')
-    if message_type in ["group", "supergroup"]:
-        if BOT_USERNAME and BOT_USERNAME in text:
-            new_text = text.replace(BOT_USERNAME, "").strip()
-            response = handle_response(update, new_text)
-        else:
-            return
-    else:
-        response = handle_response(update, text)
-    logger.info(f"Bot: {response}")
-    await update.message.reply_text(response)
-
-
-async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Update {update} caused error {context.error}")
-
-
-if __name__ == "__main__":
-    logger.info("Initializing bot...")
-
+def build_application() -> Application:
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("custom", custom_command))
     app.add_handler(CommandHandler("introduction", introduction_command))
 
-    # Handler for URLs
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(URL_PATTERN), handle_url))
-
-    # Handler for general conversation (only if it doesn't match a URL)
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(URL_PATTERN) & ~filters.StatusUpdate.ALL, handle_message)
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(URL_PATTERN), handle_url)
     )
-
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & ~filters.Regex(URL_PATTERN) & ~filters.StatusUpdate.ALL,
+            handle_message,
+        )
+    )
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_error_handler(error)
+    app.add_error_handler(error_handler)
 
-    port = os.environ.get("PORT")
-    webhook_url = (
-        os.environ.get("WEBHOOK_URL")
-        or os.environ.get("RENDER_EXTERNAL_URL")
-        or ("https://clipshot.onrender.com" if port else None)
-    )
+    return app
+
+
+if __name__ == "__main__":
+    logger.info("Initializing ClipShot...")
+    app = build_application()
 
     try:
-        if port and webhook_url:
-            logger.info(f"Starting bot in Webhook mode on port {port} with webhook_url={webhook_url}")
+        if PORT and WEBHOOK_URL:
+            logger.info(f"Starting bot in Webhook mode on port {PORT} (webhook_url={WEBHOOK_URL})...")
             app.run_webhook(
                 listen="0.0.0.0",
-                port=int(port),
+                port=int(PORT),
                 url_path="",
-                webhook_url=webhook_url,
+                webhook_url=WEBHOOK_URL,
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,
             )
@@ -483,9 +79,4 @@ if __name__ == "__main__":
                 drop_pending_updates=True,
             )
     finally:
-        if COOKIES_FILE and os.path.exists(COOKIES_FILE):
-            try:
-                os.remove(COOKIES_FILE)
-                logger.info("Cleanup: Removed temporary cookies file")
-            except Exception as e:
-                logger.error(f"Failed to remove cookies file: {e}")
+        cleanup_cookies()
