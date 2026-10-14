@@ -1,13 +1,10 @@
 import asyncio
-import http.server
 import logging
 import os
 import re
 import shutil
-import socketserver
 import subprocess
 import tempfile
-import threading
 import uuid
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -27,6 +24,21 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# Monkeypatch PTB's Webhook TelegramHandler so GET / responds to Render's health checks
+try:
+    from telegram.ext._utils.webhookhandler import TelegramHandler
+
+    async def _health_check_get(self):
+        self.set_header("Content-Type", "text/html")
+        self.write(
+            "<html><body><h1>ClipShot is running!</h1><p>Bot is active and listening for webhooks.</p></body></html>"
+        )
+
+    TelegramHandler.SUPPORTED_METHODS = ("POST", "GET")
+    TelegramHandler.get = _health_check_get
+except Exception as e:
+    logger.warning(f"Could not monkeypatch TelegramHandler for health checks: {e}")
 
 try:
     from secure import BOT_USERNAME, TOKEN
@@ -64,28 +76,6 @@ CHOICES = {
     "audio": "Audio",
 }
 pending_choices = {}
-
-
-class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        self.wfile.write(
-            b"<html><body><h1>ClipShot is running!</h1><p>Bot is active and polling for updates.</p></body></html>"
-        )
-
-    def log_message(self, format, *args):
-        # Suppress logging for health checks to keep logs clean
-        return
-
-
-def run_health_check_server():
-    port = int(os.environ.get("PORT", "8080"))
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", port), HealthCheckHandler) as httpd:
-        logger.info(f"Health check server running on port {port}")
-        httpd.serve_forever()
 
 
 async def expand_url(short_url: str) -> str:
@@ -142,6 +132,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"URL pattern matched: {message_text}")
         user_id = update.message.from_user.id
         pending_choices[user_id] = message_text
+        context.user_data["pending_url"] = message_text
+
         keyboard = [
             [InlineKeyboardButton(CHOICES["video"], callback_data="video")],
             [InlineKeyboardButton(CHOICES["audio"], callback_data="audio")],
@@ -157,13 +149,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    choice = query.data
+    logger.info(f"Button callback received: choice='{choice}', user_id={user_id}")
 
-    if user_id not in pending_choices:
+    url = pending_choices.pop(user_id, None) or context.user_data.get("pending_url")
+    if not url:
+        logger.warning(f"No pending URL found for user {user_id}")
         await query.edit_message_text("No pending URL found. Please send a URL first.")
         return
 
-    url = pending_choices.pop(user_id)
-    choice = query.data
     if choice not in CHOICES:
         await query.edit_message_text("Invalid choice.")
         return
@@ -444,11 +438,7 @@ async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 if __name__ == "__main__":
-    logger.info("Starting bot...")
-
-    # Start health check server for Render
-    if os.environ.get("PORT"):
-        threading.Thread(target=run_health_check_server, daemon=True).start()
+    logger.info("Initializing bot...")
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
@@ -467,8 +457,31 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_error_handler(error)
 
+    port = os.environ.get("PORT")
+    webhook_url = (
+        os.environ.get("WEBHOOK_URL")
+        or os.environ.get("RENDER_EXTERNAL_URL")
+        or ("https://clipshot.onrender.com" if port else None)
+    )
+
     try:
-        app.run_polling(poll_interval=3)
+        if port and webhook_url:
+            logger.info(f"Starting bot in Webhook mode on port {port} with webhook_url={webhook_url}")
+            app.run_webhook(
+                listen="0.0.0.0",
+                port=int(port),
+                url_path="",
+                webhook_url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
+        else:
+            logger.info("Starting bot in Polling mode...")
+            app.run_polling(
+                poll_interval=1,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
     finally:
         if COOKIES_FILE and os.path.exists(COOKIES_FILE):
             try:
