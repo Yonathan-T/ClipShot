@@ -1,3 +1,4 @@
-yt-dlp>=2024.4.9
+yt-dlp>=2026.8.19
 python-telegram-bot
-requests
+httpx
+curl_cffi
